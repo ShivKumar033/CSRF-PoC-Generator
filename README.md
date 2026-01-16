@@ -1,6 +1,6 @@
 # 🛡️ CSRF PoC Generator - Burp Suite Extension
 
-A powerful and user-friendly Burp Suite extension that automatically generates **Cross-Site Request Forgery (CSRF) Proof-of-Concept (PoC)** payloads in multiple formats (HTML form, JavaScript Fetch API, and cURL). Ideal for penetration testers and bug bounty hunters.
+A powerful and user-friendly Burp Suite extension that automatically generates **Cross-Site Request Forgery (CSRF) Proof-of-Concept (PoC)** payloads in multiple formats (HTML form, JavaScript Fetch API, and cURL). Ideal help for penetration testers and bug bounty hunters.
 
 ---
 
@@ -43,13 +43,13 @@ A powerful and user-friendly Burp Suite extension that automatically generates *
 
 1. **Launch Burp Suite**
 
-2. Go to **Extender > Options > Python Environment**  
-   Click `Select file...` and choose the **Jython standalone JAR** you downloaded.
+2. Go to **Extensions > Extensions Settings > Python Environment**  
+   Click `Select file` and choose the **Jython standalone JAR** you downloaded.
 
-3. Go to **Extender > Extensions**  
+3. Go to **Extensions > Installed > See Downloaded Bup Extensions**  
    Click `Add`  
    - Extension Type: **Python**
-   - Extension File: Browse and select `csrf-poc-generator.py`
+   - Select file: Browse and select `csrf-poc-generator.py`
 
 4. (Optional) Under **Options > Include Library JARs**, add:
    - `rsyntaxtextarea.jar` if syntax highlighting is desired.
