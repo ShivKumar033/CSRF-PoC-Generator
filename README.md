@@ -120,20 +120,6 @@ fetch("http://example.com/delete", {
 curl -X POST -d "id=42" "http://example.com/delete"
 ```
 
-
-## 🤝 Support & Contributions
-
-We welcome contributions and improvements! Here's how you can help:
-
-- ⭐ **Star** this repository to show your support
-- 🐛 **Report bugs** or request features via [GitHub Issues](https://github.com/Shiv-cybr03/CSRF-PoC-Generator/issues)
-- 🍴 **Fork the repository** and submit a Pull Request with your enhancements
-- 💬 Provide feedback or suggestions in the Issues tab
-
-Please follow the [Code of Conduct](CODE_OF_CONDUCT.md) and contribute respectfully.
-
----
-
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
