@@ -4,6 +4,8 @@ A powerful and user-friendly Burp Suite extension that automatically generates *
 
 ---
 
+<img src="./csrf1.png" alt="CSRF PoC Screenshot" width="600" height="400">
+
 ## 📦 Features
 
 ✅ Generate CSRF PoCs directly from Burp Suite requests.
