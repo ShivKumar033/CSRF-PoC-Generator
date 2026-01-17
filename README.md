@@ -78,6 +78,8 @@ A powerful and user-friendly Burp Suite extension that automatically generates *
 
 ---
 
+![Screenshot of the project](./csrf.png)
+
 ## 📋 Example
 ---
 
