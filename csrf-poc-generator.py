@@ -205,7 +205,7 @@ X-Requested-With: {}
 === SECURITY ASSESSMENT ===
 Risk Level: {}
 Indicators: {}
-========================""".format(
+=========================""".format(
             self.original_url, 
             self.method, 
             self.host, 
