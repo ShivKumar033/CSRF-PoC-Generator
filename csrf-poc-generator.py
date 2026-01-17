@@ -115,11 +115,14 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
             self.is_multipart = is_multipart
             self.original_url = str(url)
             self.host = host
-
-            # Generate request summary
-            summary = self.generate_summary()
             
-            # Generate default PoC
+            # Store headers for analysis
+            self.headers = headers
+            
+            # Generate request summary
+            summary = self.generate_summary(headers)
+            
+            # Generate default PoC (HTML + JavaScript Fetch)
             default_html = self.generate_auto_csrf_poc()
             
             self.show_popup("CSRF PoC Generator", default_html, summary)
@@ -129,20 +132,95 @@ class BurpExtender(IBurpExtender, IContextMenuFactory):
             import traceback
             traceback.print_exc()
 
-    def generate_summary(self):
-        """Generate request summary"""
+    def generate_summary(self, headers):
+        """Generate enhanced request summary with header analysis"""
         param_count = len(self.form_fields)
         request_type = "JSON" if self.is_json else ("Multipart" if self.is_multipart else "URL-encoded")
         
+        # Analyze headers
+        csrf_token_found = False
+        custom_headers = []
+        accept_header = None
+        origin_header = None
+        referer_header = None
+        xhr_header = False
+        
+        for header in headers:
+            header_lower = header.lower()
+            
+            # CSRF token detection
+            if "csrf" in header_lower or "xsrf" in header_lower:
+                csrf_token_found = True
+                custom_headers.append(header.split(":", 1)[0])
+            
+            # Accept header
+            if header_lower.startswith("accept:"):
+                accept_header = header.split(":", 1)[1].strip()
+            
+            # Origin header
+            if header_lower.startswith("origin:"):
+                origin_header = header.split(":", 1)[1].strip()
+            
+            # Referer header
+            if header_lower.startswith("referer:"):
+                referer_header = header.split(":", 1)[1].strip()
+            
+            # XMLHttpRequest detection
+            if header_lower.startswith("x-requested-with:"):
+                xhr_header = True
+                custom_headers.append("X-Requested-With")
+            
+            # Other custom headers
+            if header_lower.startswith("x-") and not header_lower.startswith("x-requested-with:"):
+                custom_headers.append(header.split(":", 1)[0])
+        
+        # Risk assessment
+        risk_indicators = []
+        if not csrf_token_found:
+            risk_indicators.append("No CSRF token detected")
+        if not xhr_header and self.is_json:
+            risk_indicators.append("JSON request without X-Requested-With")
+        if self.method.upper() in ["POST", "PUT", "DELETE", "PATCH"]:
+            risk_indicators.append("State-changing operation")
+        
+        risk_level = "HIGH" if len(risk_indicators) >= 2 else ("MEDIUM" if len(risk_indicators) == 1 else "LOW")
+        
+        # Build summary
         summary = """=== REQUEST SUMMARY ===
 Target: {}
 Method: {}
 Host: {}
 Content-Type: {}
+Accept: {}
 Parameters: {} fields detected
 Request Type: {}
-========================""".format(self.original_url, self.method, self.host, 
-           self.content_type, param_count, request_type)
+
+=== HEADER ANALYSIS ===
+CSRF Token: {}
+Custom Headers: {}
+Origin: {}
+Referer: {}
+X-Requested-With: {}
+
+=== SECURITY ASSESSMENT ===
+Risk Level: {}
+Indicators: {}
+========================""".format(
+            self.original_url, 
+            self.method, 
+            self.host, 
+            self.content_type,
+            accept_header if accept_header else "Not specified",
+            param_count, 
+            request_type,
+            "Found" if csrf_token_found else "NOT FOUND",
+            ", ".join(custom_headers) if custom_headers else "None",
+            origin_header if origin_header else "Not present",
+            referer_header if referer_header else "Not present",
+            "Yes" if xhr_header else "No",
+            risk_level,
+            "; ".join(risk_indicators) if risk_indicators else "None detected"
+        )
         return summary
 
     def parse_urlencoded(self, data):
@@ -208,39 +286,112 @@ Request Type: {}
         return items
 
     def generate_auto_csrf_poc(self):
-        """Auto-generate CSRF PoC based on request type"""
-        # Build form fields HTML
-        form_fields_html = ""
-        for name, value in self.form_fields:
-            name_escaped = self.html_escape(name)
-            value_escaped = self.html_escape(value)
-            form_fields_html += '      <input type="hidden" name="{}" value="{}">\n'.format(
-                name_escaped, value_escaped)
-
-        # Extract domain name for title
+        """Auto-generate CSRF PoC using HTML + JavaScript Fetch format"""
         domain = self.host
         
-        # Generate clean HTML
+        # Detect Accept header for fetch
+        accept_header = "*/*"
+        for header in self.headers:
+            if header.lower().startswith("accept:"):
+                accept_header = header.split(":", 1)[1].strip()
+                break
+        
+        # Generate fetch request based on content type
+        if self.is_json and self.json_body:
+            # JSON request - use JSON.stringify with actual object
+            try:
+                import json
+                # Parse and pretty print JSON
+                json_obj = json.loads(self.json_body)
+                json_formatted = json.dumps(json_obj, indent=4)
+                # Indent for script block (6 spaces)
+                json_indented = "\n".join(["          " + line if line.strip() else "" 
+                                          for line in json_formatted.split("\n")])
+                
+                fetch_code = """      fetch("{}", {{
+        method: "{}",
+        credentials: "include",
+        headers: {{
+          "Accept": "{}",
+          "Content-Type": "{}"
+        }},
+        body: JSON.stringify(
+{}
+        )
+      }});""".format(self.action_url, self.method, accept_header, 
+                     self.content_type, json_indented)
+            except:
+                # If JSON parsing fails, use raw string
+                body_str = self.json_body.replace('\\', '\\\\').replace('"', '\\"').replace("\n", " ")
+                fetch_code = """      fetch("{}", {{
+        method: "{}",
+        credentials: "include",
+        headers: {{
+          "Accept": "{}",
+          "Content-Type": "{}"
+        }},
+        body: "{}"
+      }});""".format(self.action_url, self.method, accept_header, 
+                     self.content_type, body_str)
+            
+        else:
+            # URL-encoded or form data request
+            if len(self.form_fields) > 0:
+                # Build URL-encoded string directly
+                params = []
+                for name, value in self.form_fields:
+                    params.append("{}={}".format(
+                        self.url_encode(str(name)), 
+                        self.url_encode(str(value))))
+                body_string = "&".join(params)
+                
+                fetch_code = """      fetch("{}", {{
+        method: "{}",
+        credentials: "include",
+        headers: {{
+          "Accept": "{}",
+          "Content-Type": "application/x-www-form-urlencoded"
+        }},
+        body: "{}"
+      }});""".format(self.action_url, self.method, accept_header, body_string)
+            else:
+                # No body
+                fetch_code = """      fetch("{}", {{
+        method: "{}",
+        credentials: "include",
+        headers: {{
+          "Accept": "{}"
+        }}
+      }});""".format(self.action_url, self.method, accept_header)
+        
+        # Generate action description
+        action_desc = "CSRF Attack"
+        if "update" in self.action_url.lower() or "edit" in self.action_url.lower():
+            action_desc = "Profile Update"
+        elif "delete" in self.action_url.lower():
+            action_desc = "Delete Operation"
+        elif "password" in self.action_url.lower():
+            action_desc = "Password Change"
+        elif "message" in self.action_url.lower() or "chat" in self.action_url.lower():
+            action_desc = "Message Injection"
+        elif "email" in self.action_url.lower():
+            action_desc = "Email Change"
+        
+        # Generate clean HTML with Fetch
         html = """<!DOCTYPE html>
 <html>
-  <head>
-    <title>CSRF PoC</title>
-  </head>
   <body>
-    <h2>CSRF PoC - {}</h2>
-    <form action="{}" method="{}">
-{}      <input type="submit" value="Submit CSRF Request">
-    </form>
+    <h1>CSRF PoC - {}</h1>
     <script>
-      document.forms[0].submit();
+{}
     </script>
   </body>
-</html>""".format(domain, self.action_url, self.method, form_fields_html)
+</html>""".format(action_desc, fetch_code)
         
         return html
 
-    def generate_html_form_detailed(self, auto_submit, show_summary):
-        """Generate detailed HTML form PoC"""
+    def generate_html_form_classic(self, auto_submit, show_summary):
+        """Generate classic HTML form PoC (traditional method)"""
         form_fields_html = ""
         for name, value in self.form_fields:
             name_escaped = self.html_escape(name)
@@ -250,9 +401,7 @@ Request Type: {}
 
         submit_script = """
     <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        document.forms[0].submit();
-      });
+      document.forms[0].submit();
     </script>""" if auto_submit else ""
 
         summary_html = ""
@@ -270,22 +419,7 @@ Request Type: {}
 <html>
   <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CSRF PoC - {}</title>
-    <style>
-      body {{ font-family: Arial, sans-serif; margin: 40px; }}
-      h2 {{ color: #333; }}
-      form {{ margin: 20px 0; }}
-      input[type="submit"] {{ 
-        background: #4CAF50; 
-        color: white; 
-        padding: 10px 20px; 
-        border: none; 
-        cursor: pointer; 
-        font-size: 16px;
-      }}
-      input[type="submit"]:hover {{ background: #45a049; }}
-    </style>
+    <title>CSRF PoC</title>
   </head>
   <body>
     <h2>CSRF PoC - {}</h2>{}
@@ -293,58 +427,105 @@ Request Type: {}
 {}      <input type="submit" value="Submit CSRF Request">
     </form>{}
   </body>
-</html>""".format(self.host, self.host, summary_html, 
+</html>""".format(self.host, summary_html, 
                  self.action_url, self.method, form_fields_html, submit_script)
 
     def generate_fetch_js(self, use_credentials):
-        """Generate JavaScript Fetch API PoC"""
+        """Generate pure JavaScript Fetch API PoC (Advanced) - Clean minimal output"""
+        # Detect Accept header
+        accept_header = "*/*"
+        for header in self.headers:
+            if header.lower().startswith("accept:"):
+                accept_header = header.split(":", 1)[1].strip()
+                break
+        
         if self.is_json and self.json_body:
-            body_str = self.json_body.replace('\\', '\\\\').replace('"', '\\"').replace("\n", "\\n")
-            return """// CSRF PoC using Fetch API
+            # JSON request - use JSON.stringify with actual object
+            try:
+                import json
+                # Parse and pretty print JSON
+                json_obj = json.loads(self.json_body)
+                json_formatted = json.dumps(json_obj, indent=2)
+                # Indent for body (4 spaces)
+                json_indented = "\n".join(["    " + line if line.strip() else "" 
+                                          for line in json_formatted.split("\n")])
+                
+                return """// CSRF PoC - Pure JavaScript
 fetch("{}", {{
   method: "{}",
+  credentials: "{}",
   headers: {{
-    "Content-Type": "application/json"
+    "Accept": "{}",
+    "Content-Type": "{}"
   }},
-  body: "{}",
-  credentials: "{}"
-}})
-.then(response => response.text())
-.then(data => {{
-  console.log("Response:", data);
-}})
-.catch(error => {{
-  console.error("Error:", error);
-}});""".format(self.action_url, self.method, body_str, 
-               "include" if use_credentials else "same-origin")
-        else:
-            # Build URLSearchParams or FormData
-            params = []
-            for name, value in self.form_fields:
-                params.append('  params.append("{}", "{}");'.format(
-                    name.replace('"', '\\"'), value.replace('"', '\\"')))
-            params_code = "\n".join(params)
-            
-            return """// CSRF PoC using Fetch API
-const params = new URLSearchParams();
+  body: JSON.stringify(
 {}
-
+  )
+}});""".format(
+                    self.action_url, 
+                    self.method, 
+                    "include" if use_credentials else "same-origin",
+                    accept_header,
+                    self.content_type,
+                    json_indented)
+            except:
+                # Fallback to raw string if JSON parsing fails
+                body_str = self.json_body.replace('\\', '\\\\').replace('"', '\\"').replace("\n", " ")
+                return """// CSRF PoC - Pure JavaScript
 fetch("{}", {{
   method: "{}",
+  credentials: "{}",
   headers: {{
+    "Accept": "{}",
+    "Content-Type": "{}"
+  }},
+  body: "{}"
+}});""".format(
+                    self.action_url, 
+                    self.method, 
+                    "include" if use_credentials else "same-origin",
+                    accept_header,
+                    self.content_type,
+                    body_str)
+        else:
+            # URL-encoded request - direct body string (no URLSearchParams)
+            if len(self.form_fields) > 0:
+                params = []
+                for name, value in self.form_fields:
+                    params.append("{}={}".format(
+                        self.url_encode(str(name)), 
+                        self.url_encode(str(value))))
+                body_string = "&".join(params)
+                
+                return """// CSRF PoC - Pure JavaScript
+fetch("{}", {{
+  method: "{}",
+  credentials: "{}",
+  headers: {{
+    "Accept": "{}",
     "Content-Type": "application/x-www-form-urlencoded"
   }},
-  body: params.toString(),
-  credentials: "{}"
-}})
-.then(response => response.text())
-.then(data => {{
-  console.log("Response:", data);
-}})
-.catch(error => {{
-  console.error("Error:", error);
-}});""".format(params_code, self.action_url, self.method,
-               "include" if use_credentials else "same-origin")
+  body: "{}"
+}});""".format(
+                    self.action_url, 
+                    self.method, 
+                    "include" if use_credentials else "same-origin",
+                    accept_header,
+                    body_string)
+            else:
+                # No body - just headers
+                return """// CSRF PoC - Pure JavaScript
+fetch("{}", {{
+  method: "{}",
+  credentials: "{}",
+  headers: {{
+    "Accept": "{}"
+  }}
+}});""".format(
+                    self.action_url, 
+                    self.method, 
+                    "include" if use_credentials else "same-origin",
+                    accept_header)
 
     def generate_xhr_js(self):
         """Generate XMLHttpRequest PoC"""
@@ -424,8 +605,8 @@ xhr.send('{}');""".format(self.method, self.action_url, content_type, body_str)
         options_panel = JPanel(FlowLayout(FlowLayout.LEFT))
         
         options_panel.add(JLabel("Format:"))
-        format_dropdown = JComboBox(["Auto PoC (Simple)", "HTML Form (Detailed)", 
-                                     "JavaScript Fetch", "XMLHttpRequest", "cURL Command"])
+        format_dropdown = JComboBox(["Auto PoC (Fetch JS)", "HTML Form (Classic)", 
+                                     "JavaScript Fetch (Advanced)", "XMLHttpRequest", "cURL Command"])
         options_panel.add(format_dropdown)
         
         auto_submit_checkbox = JCheckBox("Auto-submit", True)
@@ -434,7 +615,7 @@ xhr.send('{}');""".format(self.method, self.action_url, content_type, body_str)
         show_summary_checkbox = JCheckBox("Show Details", False)
         options_panel.add(show_summary_checkbox)
         
-        credentials_checkbox = JCheckBox("Include Credentials", False)
+        credentials_checkbox = JCheckBox("Include Credentials", True)
         options_panel.add(credentials_checkbox)
 
         # Output area
@@ -468,17 +649,17 @@ xhr.send('{}');""".format(self.method, self.action_url, content_type, body_str)
 
         def update_output(event=None):
             fmt = format_dropdown.getSelectedItem()
-            if fmt == "Auto PoC (Simple)":
+            if fmt == "Auto PoC (Fetch JS)":
                 content = self.generate_auto_csrf_poc()
                 if HAS_SYNTAX:
                     text_area.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_HTML)
-            elif fmt == "HTML Form (Detailed)":
-                content = self.generate_html_form_detailed(
+            elif fmt == "HTML Form (Classic)":
+                content = self.generate_html_form_classic(
                     auto_submit_checkbox.isSelected(),
                     show_summary_checkbox.isSelected())
                 if HAS_SYNTAX:
                     text_area.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_HTML)
-            elif fmt == "JavaScript Fetch":
+            elif fmt == "JavaScript Fetch (Advanced)":
                 content = self.generate_fetch_js(credentials_checkbox.isSelected())
                 if HAS_SYNTAX:
                     text_area.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_JAVASCRIPT)
